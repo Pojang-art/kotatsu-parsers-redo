@@ -142,6 +142,43 @@ internal abstract class GroupleParser(
         val hashRegex = Regex("window.user_hash\\s*=\\s*\'([^\']+)\'")
         val userHash = doc.select("script").firstNotNullOfOrNull { it.html().findGroupValue(hashRegex) }
         val hasNsfwAlert = root.select(".alert-warning").any { it.ownText().contains(NSFW_ALERT) }
+        val tagLinks = root.select(
+            "div.subject-meta a.element-link, " +
+                ".subject-meta a.element-link, " +
+                ".elem_genre a, " +
+                ".subject-tags a, " +
+                ".cr-tags a.cr-tags__item, " +
+                "a.element-link[href*='/genre/'], " +
+                "a[href*='/list/genre/'], " +
+                "a[href*='/genre/'], " +
+                "a[href*='/list/tag/'], " +
+                "a[href*='/tag/']",
+        ) + doc.select(".cr-tags a.cr-tags__item")
+        val tags = tagLinks.mapNotNullTo(manga.tags.toMutableSet()) { a ->
+            val title = a.textOrNull()
+                ?.replace("#", "")
+                ?.trim()
+                ?.toTitleCase()
+                ?.takeIf { it.isNotEmpty() }
+                ?: return@mapNotNullTo null
+            val href = a.attrOrNull("href")
+            val key = when {
+                href.isNullOrEmpty() -> title.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), "-").trim('-')
+                "/list/genre/" in href -> href.substringAfter("/list/genre/").substringBefore('/').substringBefore('?')
+                "/list/tag/" in href -> href.substringAfter("/list/tag/").substringBefore('/').substringBefore('?')
+                "/genre/" in href -> href.substringAfter("/genre/").substringBefore('/').substringBefore('?')
+                "/tag/" in href -> href.substringAfter("/tag/").substringBefore('/').substringBefore('?')
+                else -> href.removeSuffix('/').substringAfterLast('/').substringBefore('?')
+            }.ifEmpty {
+                title.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), "-").trim('-')
+            }
+            if (key.isEmpty()) return@mapNotNullTo null
+            MangaTag(
+                title = title,
+                key = key,
+                source = source,
+            )
+        }
         return manga.copy(
             source = newSource,
             title = doc.metaValue("name") ?: manga.title,
@@ -153,14 +190,7 @@ internal abstract class GroupleParser(
             largeCoverUrl = coverImg?.attrAsAbsoluteUrlOrNull("data-full"),
             coverUrl = manga.coverUrl
                 ?: coverImg?.attrAsAbsoluteUrlOrNull("data-thumb")?.replace("_p.", "."),
-            tags = root.selectFirstOrThrow("div.subject-meta")
-                .getElementsByAttributeValueContaining("href", "/list/genre/").mapTo(manga.tags.toMutableSet()) { a ->
-                    MangaTag(
-                        title = a.text().toTitleCase(),
-                        key = a.attr("href").removeSuffix('/').substringAfterLast('/'),
-                        source = source,
-                    )
-                },
+            tags = tags,
             state = if (isRestricted) {
                 MangaState.RESTRICTED
             } else {
@@ -398,9 +428,16 @@ internal abstract class GroupleParser(
 
     override suspend fun getRelatedManga(seed: Manga): List<Manga> {
         val doc = webClient.httpGet(seed.url.toAbsoluteUrl(domain)).parseHtml()
-        val root = doc.body().requireElementById("mangaBox").select("h4").first { it.ownText() == RELATED_TITLE }
-            .nextElementSibling() ?: doc.parseFailed("Cannot find root")
-        return root.select("div.tile").mapNotNull(::parseManga)
+        val body = doc.body()
+        val root = body.getElementById("mangaBox")
+        val relatedHeader = root?.select("h4")?.firstOrNull {
+            it.ownText().contains(RELATED_TITLE, ignoreCase = true)
+        }
+        val relatedContainer = relatedHeader?.nextElementSibling()
+            ?: root?.selectFirst("div.tiles.row:has(.tile), .related-titles, .recommendations")
+            ?: body.selectFirst("div.tiles.row:has(.tile)")
+            ?: return emptyList()
+        return relatedContainer.select("div.tile").mapNotNull(::parseManga)
     }
 
     protected open fun getSource(url: HttpUrl): MangaSource = when (url.host) {

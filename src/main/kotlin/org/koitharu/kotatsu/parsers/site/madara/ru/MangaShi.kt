@@ -9,4 +9,5 @@ import org.koitharu.kotatsu.parsers.site.madara.MadaraParser
 internal class MangaShi(context: MangaLoaderContext) :
 	MadaraParser(context, MangaParserSource.MANGASHI, "manga-shi.org") {
 	override val datePattern = "dd.MM.yyyy"
+    override val withoutAjax = true
 }
