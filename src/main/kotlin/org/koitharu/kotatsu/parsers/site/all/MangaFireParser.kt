@@ -68,6 +68,10 @@ internal abstract class MangaFireParser(
 
     private val imageHttp11Client by lazy {
         context.httpClient.newBuilder()
+            .apply {
+                interceptors().clear()
+                networkInterceptors().clear()
+            }
             .protocols(listOf(Protocol.HTTP_1_1))
             .build()
     }
@@ -164,6 +168,7 @@ internal abstract class MangaFireParser(
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val newRequest = request.newBuilder()
+            .removeHeader("Referer")
             .addHeader("Referer", "https://$domain/")
             .build()
 
