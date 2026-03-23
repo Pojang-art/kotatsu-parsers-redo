@@ -208,13 +208,14 @@ internal class ElderManga(context: MangaLoaderContext):
     private suspend fun loadSiteDocument(url: String): Document {
         when (val result = tryHttpDocument(url)) {
             is HttpDocumentResult.Success -> return result.document
-            HttpDocumentResult.CloudflareChallenge -> context.requestBrowserAction(this, url)
             HttpDocumentResult.SecondaryVerification,
+            HttpDocumentResult.CloudflareChallenge,
             HttpDocumentResult.Failed,
-            null -> Unit
+            null -> {
+                context.requestBrowserAction(this, url)
+                throw ParseException("Interactive action is required to load page", url)
+            }
         }
-        return loadDocumentViaWebView(url)
-            ?: throw ParseException("Failed to load page via automatic verification webview", url)
     }
 
     private suspend fun tryHttpDocument(url: String): HttpDocumentResult? {
@@ -228,38 +229,6 @@ internal class ElderManga(context: MangaLoaderContext):
                 return HttpDocumentResult.SecondaryVerification
             }
             HttpDocumentResult.CloudflareChallenge
-        }
-    }
-
-    private suspend fun loadDocumentViaWebView(url: String): Document? {
-        val html = context.evaluateJs(url, VERIFICATION_WAIT_SCRIPT, 20000L)
-            ?.let(::decodeWebViewHtml)
-            ?.takeIf { it.isNotBlank() }
-            ?: return null
-
-        val doc = Jsoup.parse(html, url)
-        if (hasValidElderContent(doc)) {
-            return doc
-        }
-        if (isShieldVerificationPage(doc)) {
-            return null
-        }
-        context.requestBrowserAction(this, url)
-        return null
-    }
-
-    private fun decodeWebViewHtml(raw: String): String {
-        val unquoted = if (raw.startsWith("\"") && raw.endsWith("\"")) {
-            raw.substring(1, raw.length - 1)
-                .replace("\\\"", "\"")
-                .replace("\\n", "\n")
-                .replace("\\r", "\r")
-                .replace("\\t", "\t")
-        } else {
-            raw
-        }
-        return unquoted.replace(Regex("""\\u([0-9A-Fa-f]{4})""")) { match ->
-            match.groupValues[1].toInt(16).toChar().toString()
         }
     }
 
@@ -321,113 +290,5 @@ internal class ElderManga(context: MangaLoaderContext):
             data object Failed : HttpDocumentResult
         }
 
-        private val VERIFICATION_WAIT_SCRIPT = """
-            (() => {
-                const hasElderContent = () => {
-                    if (!document.documentElement) {
-                        return false;
-                    }
-                    return document.querySelector('section[aria-label="series area"] .card') !== null ||
-                        document.querySelector('section[aria-label="series area"] a[href*="/manga/"] h2') !== null ||
-                        document.querySelector('div.list-episode a') !== null ||
-                        document.querySelector('#content h1') !== null ||
-                        document.querySelector('a[href*="search?categories="]') !== null;
-                };
-
-                return new Promise(resolve => {
-                    let observer = null;
-                    let stableTimer = null;
-
-                    const isVerificationPage = () => {
-                        const html = (document.documentElement ? document.documentElement.outerHTML : '').toLowerCase();
-                        const title = (document.title || '').toLowerCase();
-                        const challengeDetected = () => {
-                            const hasChallengeScript = document.querySelector('script[src*="challenge-platform"]') !== null;
-                            const hasChallengeTitle = document.getElementById('challenge-error-title') !== null;
-                            const hasChallengeText = document.getElementById('challenge-error-text') !== null;
-                            const hasChallengeForm = document.querySelector('form[action*="__cf_chl"]') !== null;
-                            const root = document.documentElement;
-                            const lower = ((root && root.innerText) || '').toLowerCase();
-                            const hasChallengeTextSignal =
-                                (lower.includes('just a moment') && lower.includes('cloudflare')) ||
-                                (lower.includes('checking your browser') && lower.includes('cloudflare')) ||
-                                lower.includes('cf-chl-opt');
-                            return hasChallengeScript || hasChallengeTitle || hasChallengeText || hasChallengeForm || hasChallengeTextSignal;
-                        };
-                        const isCloudflare = !hasElderContent() && !(
-                            document.querySelector('#container.verified') !== null ||
-                            html.includes('verification complete') ||
-                            html.includes('protected by waf security shield') ||
-                            html.includes('access granted!') ||
-                            html.includes('computing challenge') ||
-                            html.includes('solving proof of work')
-                        );
-                        if (isCloudflare) {
-                            return true;
-                        }
-                        return document.querySelector('#container.verified') !== null ||
-                            html.includes('verification complete') ||
-                            html.includes('protected by waf security shield') ||
-                            html.includes('access granted!') ||
-                            html.includes('computing challenge') ||
-                            html.includes('solving proof of work');
-                    };
-
-                    const finish = () => {
-                        if (stableTimer) {
-                            clearTimeout(stableTimer);
-                            stableTimer = null;
-                        }
-                        if (observer) {
-                            observer.disconnect();
-                        }
-                        resolve(document.documentElement ? document.documentElement.outerHTML : '');
-                    };
-
-                    const scheduleStableFinish = () => {
-                        if (stableTimer) {
-                            clearTimeout(stableTimer);
-                        }
-                        stableTimer = setTimeout(() => {
-                            if (hasElderContent() && !isVerificationPage()) {
-                                finish();
-                            }
-                        }, 1200);
-                    };
-
-                    const waitForContent = start => {
-                        if (hasElderContent() && !isVerificationPage()) {
-                            scheduleStableFinish();
-                        } else if (Date.now() - start > 5000) {
-                            finish();
-                        } else {
-                            setTimeout(() => waitForContent(start), 200);
-                        }
-                    };
-
-                    const startWaiting = () => waitForContent(Date.now());
-
-                    if (document.readyState === 'complete') {
-                        startWaiting();
-                    } else {
-                        window.addEventListener('load', startWaiting, { once: true });
-                        setTimeout(startWaiting, 2500);
-                    }
-
-                    observer = new MutationObserver(() => {
-                        if (hasElderContent() && !isVerificationPage()) {
-                            scheduleStableFinish();
-                        }
-                    });
-                    if (document.documentElement) {
-                        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
-                    }
-
-                    setTimeout(() => {
-                        finish();
-                    }, 20000);
-                });
-            })();
-        """.trimIndent()
     }
 }
