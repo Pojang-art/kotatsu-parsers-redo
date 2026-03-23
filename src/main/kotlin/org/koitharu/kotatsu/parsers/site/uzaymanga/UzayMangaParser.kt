@@ -3,11 +3,13 @@ package org.koitharu.kotatsu.parsers.site.uzaymanga
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
+import org.koitharu.kotatsu.parsers.exception.ParseException
 import org.koitharu.kotatsu.parsers.model.ContentType
 import org.koitharu.kotatsu.parsers.model.Manga
 import org.koitharu.kotatsu.parsers.model.MangaChapter
@@ -116,7 +118,7 @@ internal abstract class UzayMangaParser(
 	}
 
 	override suspend fun getDetails(manga: Manga): Manga {
-		val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain), extraHeaders = siteHeaders()).parseHtml()
+		val doc = loadSiteDocument(manga.url.toAbsoluteUrl(domain))
 		val content = doc.getElementById("content") ?: doc
 
 		return manga.copy(
@@ -132,7 +134,7 @@ internal abstract class UzayMangaParser(
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), extraHeaders = siteHeaders()).parseHtml()
+		val doc = loadSiteDocument(chapter.url.toAbsoluteUrl(domain))
 		val script = doc.select("script")
 			.asSequence()
 			.map(Element::html)
@@ -209,12 +211,12 @@ internal abstract class UzayMangaParser(
 			)
 		}
 
-		val doc = webClient.httpGet(url, extraHeaders = siteHeaders()).parseHtml()
+		val doc = loadSiteDocument(url)
 		return doc.select("section[aria-label='series area'] .card").mapNotNull(::parseSearchCard)
 	}
 
 	private suspend fun getLatestPage(page: Int): List<Manga> {
-		val doc = webClient.httpGet("https://$domain/?page=$page", extraHeaders = siteHeaders()).parseHtml()
+		val doc = loadSiteDocument("https://$domain/?page=$page")
 		val header = doc.selectFirst("div.header:has(h2:contains(En Son Yüklenen))")
 		val grid = header?.nextElementSibling()
 			?: doc.selectFirst("div.grid.grid-cols-1")
@@ -230,7 +232,7 @@ internal abstract class UzayMangaParser(
 
 	private suspend fun searchBySlug(slug: String): List<Manga> {
 		val normalizedSlug = slug.trim().removePrefix("/").nullIfEmpty() ?: return emptyList()
-		val doc = webClient.httpGet("https://$domain/manga/$normalizedSlug", extraHeaders = siteHeaders()).parseHtml()
+		val doc = loadSiteDocument("https://$domain/manga/$normalizedSlug")
 		if (!isMangaPage(doc)) {
 			return emptyList()
 		}
@@ -238,10 +240,8 @@ internal abstract class UzayMangaParser(
 	}
 
 	private suspend fun searchByApi(query: String): List<Manga> {
-		val raw = webClient.httpGet(
-			url = "https://$domain/api/series/search/navbar?search=${query.urlEncoded()}",
-			extraHeaders = siteHeaders(),
-		).parseRaw().trim()
+		val apiUrl = "https://$domain/api/series/search/navbar?search=${query.urlEncoded()}"
+		val raw = fetchApiRaw(apiUrl).trim()
 		if (raw.isEmpty() || raw == "[]") {
 			return emptyList()
 		}
@@ -378,7 +378,7 @@ internal abstract class UzayMangaParser(
 	}
 
 	private suspend fun fetchTags(): Set<MangaTag> {
-		val doc = webClient.httpGet("https://$domain/search", extraHeaders = siteHeaders()).parseHtml()
+		val doc = loadSiteDocument("https://$domain/search")
 		val script = doc.select("script")
 			.firstOrNull { it.html().contains("\"category\":[") }
 			?.html()
@@ -419,9 +419,165 @@ internal abstract class UzayMangaParser(
 		.set("Referer", "https://$domain/")
 		.build()
 
+	private suspend fun loadSiteDocument(url: String): Document {
+		tryHttpDocument(url)?.let { doc ->
+			return doc
+		}
+		return loadDocumentViaWebView(url)
+			?: throw ParseException("Failed to load page via automatic verification webview", url)
+	}
+
+	private suspend fun tryHttpDocument(url: String): Document? {
+		val response = runCatching { webClient.httpGet(url, extraHeaders = siteHeaders()) }.getOrNull() ?: return null
+		return response.use { res ->
+			val doc = runCatching { res.parseHtml() }.getOrNull() ?: return null
+			if (hasValidUzayContent(doc)) {
+				return doc
+			}
+			if (isShieldVerificationPage(doc)) {
+				return null
+			}
+			doc
+		}
+	}
+
+	private suspend fun loadDocumentViaWebView(url: String): Document? {
+		val html = context.evaluateJs(url, VERIFICATION_WAIT_SCRIPT, 20000L)
+			?.let(::decodeWebViewHtml)
+			?.takeIf { it.isNotBlank() }
+			?: return null
+
+		val doc = Jsoup.parse(html, url)
+		if (hasValidUzayContent(doc)) {
+			return doc
+		}
+		if (isShieldVerificationPage(doc)) {
+			return null
+		}
+		return doc
+	}
+
+	private suspend fun fetchApiRaw(url: String): String {
+		val raw = runCatching {
+			webClient.httpGet(url = url, extraHeaders = siteHeaders()).parseRaw()
+		}.getOrNull()
+		if (!raw.isNullOrBlank() && !isShieldVerificationPage(raw)) {
+			return raw
+		}
+
+		loadSiteDocument("https://$domain/search")
+		return webClient.httpGet(url = url, extraHeaders = siteHeaders()).parseRaw()
+	}
+
+	private fun decodeWebViewHtml(raw: String): String {
+		val unquoted = if (raw.startsWith("\"") && raw.endsWith("\"")) {
+			raw.substring(1, raw.length - 1)
+				.replace("\\\"", "\"")
+				.replace("\\n", "\n")
+				.replace("\\r", "\r")
+				.replace("\\t", "\t")
+		} else {
+			raw
+		}
+		return unquoted.replace(Regex("""\\u([0-9A-Fa-f]{4})""")) { match ->
+			match.groupValues[1].toInt(16).toChar().toString()
+		}
+	}
+
+	private fun isShieldVerificationPage(doc: Document): Boolean = isShieldVerificationPage(doc.outerHtml())
+
+	private fun isShieldVerificationPage(html: String): Boolean {
+		val lower = html.lowercase(Locale.ROOT)
+		return lower.contains("verification complete") ||
+			lower.contains("protected by waf security shield") ||
+			lower.contains("access granted!") ||
+			lower.contains("computing challenge") ||
+			lower.contains("solving proof of work") ||
+			lower.contains("""id="container"""") && lower.contains("verified")
+	}
+
+	private fun hasValidUzayContent(doc: Document): Boolean {
+		return doc.select("section[aria-label='series area'] .card").isNotEmpty() ||
+			doc.select("div.list-episode a").isNotEmpty() ||
+			doc.select("#content h1").isNotEmpty() ||
+			doc.select("a[href*='search?categories=']").isNotEmpty() ||
+			doc.select("script").any { script ->
+				val body = script.html()
+				body.contains("\\\"path\\\":\\\"") || body.contains("\"path\"")
+			}
+	}
+
 	private companion object {
 		private const val URL_SEARCH_PREFIX = "slug:"
 		private val PAGE_REGEX = Regex("""\\"path\\":\\"([^"]+)\\""")
 		private val CHAPTER_NUMBER_REGEX = Regex("""(\d+(?:\.\d+)?)""")
+		private val VERIFICATION_WAIT_SCRIPT = """
+			(() => {
+				const hasUzayContent = () => {
+					if (!document.documentElement) {
+						return false;
+					}
+					return document.querySelector('section[aria-label="series area"] .card') !== null ||
+						document.querySelector('div.list-episode a') !== null ||
+						document.querySelector('#content h1') !== null ||
+						document.querySelector('a[href*="search?categories="]') !== null ||
+						Array.from(document.scripts).some(script => {
+							const text = script.textContent || '';
+							return text.includes('\\"path\\":\\"') || text.includes('"path"');
+						});
+				};
+
+				return new Promise(resolve => {
+					let observer = null;
+
+					const isVerificationPage = () => {
+						const html = (document.documentElement ? document.documentElement.outerHTML : '').toLowerCase();
+						return document.querySelector('#container.verified') !== null ||
+							html.includes('verification complete') ||
+							html.includes('protected by waf security shield') ||
+							html.includes('access granted!') ||
+							html.includes('computing challenge') ||
+							html.includes('solving proof of work');
+					};
+
+					const finish = () => {
+						if (observer) {
+							observer.disconnect();
+						}
+						resolve(document.documentElement ? document.documentElement.outerHTML : '');
+					};
+
+					const waitForContent = start => {
+						if ((hasUzayContent() && !isVerificationPage()) || Date.now() - start > 4000) {
+							finish();
+						} else {
+							setTimeout(() => waitForContent(start), 200);
+						}
+					};
+
+					const startWaiting = () => waitForContent(Date.now());
+
+					if (document.readyState === 'complete') {
+						startWaiting();
+					} else {
+						window.addEventListener('load', startWaiting, { once: true });
+						setTimeout(startWaiting, 2500);
+					}
+
+					observer = new MutationObserver(() => {
+						if (hasUzayContent() && !isVerificationPage()) {
+							finish();
+						}
+					});
+					if (document.documentElement) {
+						observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+					}
+
+					setTimeout(() => {
+						finish();
+					}, 20000);
+				});
+			})();
+		""".trimIndent()
 	}
 }

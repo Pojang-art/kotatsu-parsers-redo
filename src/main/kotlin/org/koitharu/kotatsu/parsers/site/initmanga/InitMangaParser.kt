@@ -5,11 +5,13 @@ import kotlinx.coroutines.sync.withLock
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
+import org.jsoup.HttpStatusException
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.config.ConfigKey
+import org.koitharu.kotatsu.parsers.exception.NotFoundException
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.ContentRating
 import org.koitharu.kotatsu.parsers.model.Manga
@@ -28,6 +30,7 @@ import org.koitharu.kotatsu.parsers.util.attrAsRelativeUrl
 import org.koitharu.kotatsu.parsers.util.attrAsRelativeUrlOrNull
 import org.koitharu.kotatsu.parsers.util.generateUid
 import org.koitharu.kotatsu.parsers.util.mapToSet
+import org.koitharu.kotatsu.parsers.util.mimeType
 import org.koitharu.kotatsu.parsers.util.nullIfEmpty
 import org.koitharu.kotatsu.parsers.util.oneOrThrowIfMany
 import org.koitharu.kotatsu.parsers.util.parseHtml
@@ -134,7 +137,7 @@ internal abstract class InitMangaParser(
 			?.distinct()
 			.orEmpty()
 		if (directPages.isNotEmpty()) {
-			return directPages.map(::toMangaPage)
+			return maybeExpandSequentialPages(directPages).map(::toMangaPage)
 		}
 
 		val html = doc.outerHtml()
@@ -143,12 +146,12 @@ internal abstract class InitMangaParser(
 			.distinct()
 			.toList()
 		if (directUrls.isNotEmpty()) {
-			return directUrls.map(::toMangaPage)
+			return maybeExpandSequentialPages(directUrls).map(::toMangaPage)
 		}
 
 		val encryptedObject = extractEncryptedObject(doc) ?: return emptyList()
 		val decrypted = decryptLayered(html, encryptedObject) ?: return emptyList()
-		return parseDecryptedPages(decrypted).map(::toMangaPage)
+		return maybeExpandSequentialPages(parseDecryptedPages(decrypted)).map(::toMangaPage)
 	}
 
 	private suspend fun getDirectoryPage(page: Int, slug: String, alwaysPaged: Boolean): List<Manga> {
@@ -495,6 +498,41 @@ internal abstract class InitMangaParser(
 		return chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 	}
 
+	private suspend fun maybeExpandSequentialPages(urls: List<String>): List<String> {
+		if (urls.size != 1) return urls
+		val firstUrl = urls.first()
+		val match = INIT_MANGA_PAGE_SEQUENCE_REGEX.matchEntire(firstUrl) ?: return urls
+
+		val prefix = match.groupValues[1]
+		val initialNumber = match.groupValues[2]
+		val suffix = match.groupValues[3]
+		val startIndex = initialNumber.toIntOrNull() ?: return urls
+
+		val expanded = ArrayList<String>(16)
+		for (pageIndex in startIndex..MAX_PROBED_INIT_MANGA_PAGES) {
+			val candidate = prefix + pageIndex.toString().padStart(initialNumber.length, '0') + suffix
+			if (!doesPageExist(candidate)) {
+				break
+			}
+			expanded += candidate
+		}
+		return expanded.ifEmpty { urls }
+	}
+
+	private suspend fun doesPageExist(url: String): Boolean {
+		return runCatching {
+			webClient.httpHead(url).use { response ->
+				response.code in 200..299 && response.mimeType?.startsWith("image/") == true
+			}
+		}.recoverCatching { error ->
+			when (error) {
+				is NotFoundException -> false
+				is HttpStatusException -> false
+				else -> throw error
+			}
+		}.getOrDefault(false)
+	}
+
 	private fun toMangaPage(url: String): MangaPage = MangaPage(
 		id = generateUid(url),
 		url = url,
@@ -528,8 +566,11 @@ internal abstract class InitMangaParser(
 		private val REGEX_ENCRYPTED_DATA =
 			Regex("""var\s+InitMangaEncryptedChapter\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL)
 		private val IMAGE_URL_REGEX = Regex("""https?://[^\s"'<>]+/wp-content/uploads/init-manga/[^\s"'<>]+""")
+		private val INIT_MANGA_PAGE_SEQUENCE_REGEX =
+			Regex("""(https?://[^\s"'<>]+/wp-content/uploads/init-manga/.*/)(\d+)(\.[A-Za-z0-9]+)$""")
 		private val TAG_PATH_REGEX = Regex("""/(?:tur|genre|kategori|category)/[^/]+(?:/[^/]+)?""")
 		private val CHAPTER_NUMBER_REGEX =
 			Regex("""(?:bolum|bölüm|chapter|ch)[^0-9]*([0-9]+(?:[.,][0-9]+)?)""", RegexOption.IGNORE_CASE)
+		private const val MAX_PROBED_INIT_MANGA_PAGES = 500
 	}
 }

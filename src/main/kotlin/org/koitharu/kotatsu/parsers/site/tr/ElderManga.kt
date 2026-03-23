@@ -1,10 +1,13 @@
 package org.koitharu.kotatsu.parsers.site.tr
 
 import org.json.JSONArray
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
+import org.koitharu.kotatsu.parsers.exception.ParseException
 import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
 import org.koitharu.kotatsu.parsers.util.json.*
@@ -16,7 +19,7 @@ internal class ElderManga(context: MangaLoaderContext):
     PagedMangaParser(context, MangaParserSource.ELDERMANGA, 25) {
 
     override val configKeyDomain = ConfigKey.Domain("eldermanga.com")
-    private val cdnSuffix = "cdn1.$domain"
+    private val cdnSuffix = "https://eldermangacdn2.efsaneler.can.re/"
 
     override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
 		super.onCreateConfig(keys)
@@ -110,7 +113,7 @@ internal class ElderManga(context: MangaLoaderContext):
             )
         }
 
-        val doc = webClient.httpGet(url).parseHtml()
+        val doc = loadSiteDocument(url)
         return doc.select("section[aria-label='series area'] .card").map { card ->
             val href = card.selectFirstOrThrow("a").attrAsRelativeUrl("href")
             Manga(
@@ -131,7 +134,7 @@ internal class ElderManga(context: MangaLoaderContext):
     }
 
     override suspend fun getDetails(manga: Manga): Manga {
-        val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
+        val doc = loadSiteDocument(manga.url.toAbsoluteUrl(domain))
         val statusText = doc.selectFirst("span:contains(Durum) + span")?.text().orEmpty()
         return manga.copy(
             tags = doc.select("a[href^='search?categories']").mapToSet {
@@ -155,7 +158,7 @@ internal class ElderManga(context: MangaLoaderContext):
                 MangaChapter(
                     id = generateUid(href),
                     title = el.selectFirstOrThrow("h3").text(),
-                    number = (i + 1).toFloat(), 
+                    number = (i + 1).toFloat(),
                     volume = 0,
                     url = href,
                     scanlator = null,
@@ -168,7 +171,7 @@ internal class ElderManga(context: MangaLoaderContext):
     }
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain)).parseHtml()
+        val doc = loadSiteDocument(chapter.url.toAbsoluteUrl(domain))
         val pageRegex = Regex("\\\\\"path\\\\\":\\\\\"([^\"]+)\\\\\"")
         val script = doc.select("script").find { it.html().contains(pageRegex) }?.html() ?: return emptyList()
         return pageRegex.findAll(script).mapNotNull { result ->
@@ -176,7 +179,7 @@ internal class ElderManga(context: MangaLoaderContext):
                 MangaPage(
                     id = generateUid(url),
                     url = "https://$cdnSuffix/upload/series/$url",
-                    preview = null, 
+                    preview = null,
                     source = source,
                 )
             }
@@ -184,21 +187,164 @@ internal class ElderManga(context: MangaLoaderContext):
     }
 
     private suspend fun fetchTags(): Set<MangaTag> {
-        val doc = webClient.httpGet("https://$domain/search").parseHtml()
-        val script = doc.select("script").find { it.html().contains("self.__next_f.push([1,\"10:[\\\"\\$,\\\"section") }?.html() 
+        val doc = loadSiteDocument("https://$domain/search")
+        val script = doc.select("script").find { it.html().contains("self.__next_f.push([1,\"10:[\\\"\\$,\\\"section") }?.html()
             ?: return emptySet()
-        
+
         val jsonStr = script.substringAfter("\"category\":[")
             .substringBefore("],\"searchParams\":{}")
             .replace("\\", "")
-        
+
         val jsonArray = JSONArray("[$jsonStr]")
         return jsonArray.mapJSONToSet { jo ->
             MangaTag(
-                key = jo.getString("id"), 
+                key = jo.getString("id"),
                 title = jo.getString("name"),
                 source = source
             )
         }
+    }
+
+    private suspend fun loadSiteDocument(url: String): Document {
+        tryHttpDocument(url)?.let { doc ->
+            return doc
+        }
+        return loadDocumentViaWebView(url)
+            ?: throw ParseException("Failed to load page via automatic verification webview", url)
+    }
+
+    private suspend fun tryHttpDocument(url: String): Document? {
+        val response = runCatching { webClient.httpGet(url) }.getOrNull() ?: return null
+        return response.use { res ->
+            val doc = runCatching { res.parseHtml() }.getOrNull() ?: return null
+            if (hasValidElderContent(doc)) {
+                return doc
+            }
+            if (isShieldVerificationPage(doc)) {
+                return null
+            }
+            doc
+        }
+    }
+
+    private suspend fun loadDocumentViaWebView(url: String): Document? {
+        val html = context.evaluateJs(url, VERIFICATION_WAIT_SCRIPT, 20000L)
+            ?.let(::decodeWebViewHtml)
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+
+        val doc = Jsoup.parse(html, url)
+        if (hasValidElderContent(doc)) {
+            return doc
+        }
+        if (isShieldVerificationPage(doc)) {
+            return null
+        }
+        return doc
+    }
+
+    private fun decodeWebViewHtml(raw: String): String {
+        val unquoted = if (raw.startsWith("\"") && raw.endsWith("\"")) {
+            raw.substring(1, raw.length - 1)
+                .replace("\\\"", "\"")
+                .replace("\\n", "\n")
+                .replace("\\r", "\r")
+                .replace("\\t", "\t")
+        } else {
+            raw
+        }
+        return unquoted.replace(Regex("""\\u([0-9A-Fa-f]{4})""")) { match ->
+            match.groupValues[1].toInt(16).toChar().toString()
+        }
+    }
+
+    private fun isShieldVerificationPage(doc: Document): Boolean {
+        val html = doc.outerHtml().lowercase(Locale.ROOT)
+        return doc.selectFirst("#container.verified") != null ||
+            html.contains("verification complete") ||
+            html.contains("protected by waf security shield") ||
+            html.contains("access granted!") ||
+            html.contains("computing challenge") ||
+            html.contains("solving proof of work")
+    }
+
+    private fun hasValidElderContent(doc: Document): Boolean {
+        return doc.select("section[aria-label='series area'] .card").isNotEmpty() ||
+            doc.select("div.list-episode a").isNotEmpty() ||
+            doc.select("a[href*='search?categories=']").isNotEmpty() ||
+            doc.select("script").any { script ->
+                val body = script.html()
+                body.contains("\\\"path\\\":\\\"") || body.contains("\"path\"")
+            }
+    }
+
+    private companion object {
+        private val VERIFICATION_WAIT_SCRIPT = """
+            (() => {
+                const hasElderContent = () => {
+                    if (!document.documentElement) {
+                        return false;
+                    }
+                    return document.querySelector('section[aria-label="series area"] .card') !== null ||
+                        document.querySelector('div.list-episode a') !== null ||
+                        document.querySelector('a[href*="search?categories="]') !== null ||
+                        Array.from(document.scripts).some(script => {
+                            const text = script.textContent || '';
+                            return text.includes('\\"path\\":\\"') || text.includes('"path"');
+                        });
+                };
+
+                return new Promise(resolve => {
+                    let observer = null;
+
+                    const isVerificationPage = () => {
+                        const html = (document.documentElement ? document.documentElement.outerHTML : '').toLowerCase();
+                        return document.querySelector('#container.verified') !== null ||
+                            html.includes('verification complete') ||
+                            html.includes('protected by waf security shield') ||
+                            html.includes('access granted!') ||
+                            html.includes('computing challenge') ||
+                            html.includes('solving proof of work');
+                    };
+
+                    const finish = () => {
+                        if (observer) {
+                            observer.disconnect();
+                        }
+                        resolve(document.documentElement ? document.documentElement.outerHTML : '');
+                    };
+
+                    const waitForContent = start => {
+                        if ((hasElderContent() && !isVerificationPage()) || Date.now() - start > 4000) {
+                            finish();
+                        } else {
+                            setTimeout(() => waitForContent(start), 200);
+                        }
+                    };
+
+                    const startWaiting = () => waitForContent(Date.now());
+
+                    if (document.readyState === 'complete') {
+                        startWaiting();
+                    } else {
+                        window.addEventListener('load', startWaiting, { once: true });
+                        setTimeout(startWaiting, 2500);
+                    }
+
+                    observer = new MutationObserver(() => {
+                        if (hasElderContent() && !isVerificationPage()) {
+                            finish();
+                        }
+                    });
+                    if (document.documentElement) {
+                        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+                    }
+
+                    setTimeout(() => {
+                        finish();
+                    }, 20000);
+                });
+            })();
+        """.trimIndent()
     }
 }
