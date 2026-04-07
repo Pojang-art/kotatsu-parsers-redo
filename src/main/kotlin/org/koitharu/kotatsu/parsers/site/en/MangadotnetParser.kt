@@ -387,7 +387,7 @@ internal class Mangadotnet(context: MangaLoaderContext) :
 			}
 		}
 
-		return chaptersBuilder.toList().reversed()
+		return chaptersBuilder.toList()
 	}
 
 	// endregion

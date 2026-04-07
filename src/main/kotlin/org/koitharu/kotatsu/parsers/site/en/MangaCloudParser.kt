@@ -81,16 +81,20 @@ internal class MangaCloud(context: MangaLoaderContext) :
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
 		if (!filter.query.isNullOrEmpty()) {
-			if (filter.query.length < 3) {
-				return emptyList()
-			}
-			return getBrowseManga(page, filter, order)
+			return getSearchManga(filter.query)
 		}
 		return when (order) {
 			SortOrder.POPULARITY -> getPopularManga(page)
 			SortOrder.UPDATED -> getLatestManga(page)
 			else -> getBrowseManga(page, filter, order)
 		}
+	}
+
+	private suspend fun getSearchManga(query: String): List<Manga> {
+		val jsonBody = JSONObject().apply { put("terms", query) }
+		val response = webClient.httpPost("$apiUrl/search".toHttpUrl(), jsonBody).parseJson()
+		val data = response.getJSONArray("data")
+		return (0 until data.length()).map { parseMangaFromSearch(data.getJSONObject(it)) }
 	}
 
 	private suspend fun getPopularManga(page: Int): List<Manga> {
@@ -120,7 +124,6 @@ internal class MangaCloud(context: MangaLoaderContext) :
 		filter.tagsExclude.forEach { excludes.put(it.key) }
 
 		val jsonBody = JSONObject().apply {
-			filter.query?.takeIf { it.isNotBlank() }?.let { put("title", it) }
 			filter.types.firstOrNull()?.let { type ->
 				when (type) {
 					ContentType.MANGA -> put("type", "Manga")
@@ -129,16 +132,14 @@ internal class MangaCloud(context: MangaLoaderContext) :
 					else -> {}
 				}
 			}
-			if (filter.query.isNullOrEmpty()) {
-				order?.let {
-					when (it) {
-						SortOrder.NEWEST -> put("sort", "created_date-DESC")
-						SortOrder.ALPHABETICAL -> put("sort", "title-ASC")
-						SortOrder.ALPHABETICAL_DESC -> put("sort", "title-DESC")
-						SortOrder.UPDATED -> put("sort", "updated_date-DESC")
-						SortOrder.RATING -> put("sort", "rating")
-						else -> {}
-					}
+			order?.let {
+				when (it) {
+					SortOrder.NEWEST -> put("sort", "created_date-DESC")
+					SortOrder.ALPHABETICAL -> put("sort", "title-ASC")
+					SortOrder.ALPHABETICAL_DESC -> put("sort", "title-DESC")
+					SortOrder.UPDATED -> put("sort", "updated_date-DESC")
+					SortOrder.RATING -> put("sort", "rating")
+					else -> {}
 				}
 			}
 			filter.states.firstOrNull()?.let { state ->
@@ -181,6 +182,31 @@ internal class MangaCloud(context: MangaLoaderContext) :
 			rating = RATING_UNKNOWN,
 			contentRating = ContentRating.SAFE,
 			tags = tags,
+			state = null,
+			authors = emptySet(),
+			source = source,
+		)
+	}
+
+	private fun parseMangaFromSearch(json: JSONObject): Manga {
+		val id = json.getString("id")
+		val title = json.getString("title")
+		val cover = json.optJSONObject("cover")
+
+		val coverUrl = cover?.let {
+			"$cdnUrl/$id/${it.getString("id")}.${it.optString("f", "jpg")}"
+		}
+
+		return Manga(
+			id = generateUid(id),
+			url = id,
+			publicUrl = "https://mangacloud.org/comic/$id",
+			coverUrl = coverUrl,
+			title = title,
+			altTitles = emptySet(),
+			rating = RATING_UNKNOWN,
+			contentRating = ContentRating.SAFE,
+			tags = emptySet(),
 			state = null,
 			authors = emptySet(),
 			source = source,
