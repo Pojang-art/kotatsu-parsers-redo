@@ -81,6 +81,9 @@ internal class MangaCloud(context: MangaLoaderContext) :
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
 		if (!filter.query.isNullOrEmpty()) {
+			if (filter.query.length < 3) {
+				return emptyList()
+			}
 			return getBrowseManga(page, filter, order)
 		}
 		return when (order) {
@@ -117,34 +120,34 @@ internal class MangaCloud(context: MangaLoaderContext) :
 		filter.tagsExclude.forEach { excludes.put(it.key) }
 
 		val jsonBody = JSONObject().apply {
-			put("title", filter.query?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
-			put("type", filter.types.firstOrNull()?.let { type ->
+			filter.query?.takeIf { it.isNotBlank() }?.let { put("title", it) }
+			filter.types.firstOrNull()?.let { type ->
 				when (type) {
-					ContentType.MANGA -> "Manga"
-					ContentType.MANHWA -> "Manhwa"
-					ContentType.MANHUA -> "Manhua"
-					else -> null
+					ContentType.MANGA -> put("type", "Manga")
+					ContentType.MANHWA -> put("type", "Manhwa")
+					ContentType.MANHUA -> put("type", "Manhua")
+					else -> {}
 				}
-			} ?: JSONObject.NULL)
-			put("sort", order?.let {
+			}
+			order?.let {
 				when (it) {
-					SortOrder.NEWEST -> "created_date-DESC"
-					SortOrder.ALPHABETICAL -> "title-ASC"
-					SortOrder.ALPHABETICAL_DESC -> "title-DESC"
-					SortOrder.UPDATED -> "updated_date-DESC"
-					SortOrder.RATING -> "rating"
-					else -> null
+					SortOrder.NEWEST -> put("sort", "created_date-DESC")
+					SortOrder.ALPHABETICAL -> put("sort", "title-ASC")
+					SortOrder.ALPHABETICAL_DESC -> put("sort", "title-DESC")
+					SortOrder.UPDATED -> put("sort", "updated_date-DESC")
+					SortOrder.RATING -> put("sort", "rating")
+					else -> {}
 				}
-			} ?: JSONObject.NULL)
-			put("status", filter.states.firstOrNull()?.let { state ->
+			}
+			filter.states.firstOrNull()?.let { state ->
 				when (state) {
-					MangaState.ONGOING -> "Ongoing"
-					MangaState.FINISHED -> "Completed"
-					MangaState.PAUSED -> "Hiatus"
-					MangaState.ABANDONED -> "Cancelled"
-					else -> null
+					MangaState.ONGOING -> put("status", "Ongoing")
+					MangaState.FINISHED -> put("status", "Completed")
+					MangaState.PAUSED -> put("status", "Hiatus")
+					MangaState.ABANDONED -> put("status", "Cancelled")
+					else -> {}
 				}
-			} ?: JSONObject.NULL)
+			}
 			put("includes", includes)
 			put("excludes", excludes)
 			put("page", page)
@@ -215,7 +218,7 @@ internal class MangaCloud(context: MangaLoaderContext) :
 					append("Chapter ")
 					append(number.toString().substringBefore(".0"))
 					name?.let {
-						append(" - ")
+						append(" ")
 						append(it)
 					}
 				}
