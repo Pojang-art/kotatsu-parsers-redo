@@ -114,7 +114,7 @@ internal class MangaCloud(context: MangaLoaderContext) :
 		filter.tagsExclude.forEach { excludes.put(it.key) }
 
 		val jsonBody = JSONObject().apply {
-			put("title", filter.query?.takeIf { it.isNotBlank() })
+			put("title", filter.query?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
 			put("type", filter.types.firstOrNull()?.let { type ->
 				when (type) {
 					ContentType.MANGA -> "Manga"
@@ -122,7 +122,7 @@ internal class MangaCloud(context: MangaLoaderContext) :
 					ContentType.MANHUA -> "Manhua"
 					else -> null
 				}
-			})
+			} ?: JSONObject.NULL)
 			put("sort", order?.let {
 				when (it) {
 					SortOrder.NEWEST -> "created_date-DESC"
@@ -132,7 +132,7 @@ internal class MangaCloud(context: MangaLoaderContext) :
 					SortOrder.RATING -> "rating"
 					else -> null
 				}
-			})
+			} ?: JSONObject.NULL)
 			put("status", filter.states.firstOrNull()?.let { state ->
 				when (state) {
 					MangaState.ONGOING -> "Ongoing"
@@ -141,7 +141,7 @@ internal class MangaCloud(context: MangaLoaderContext) :
 					MangaState.ABANDONED -> "Cancelled"
 					else -> null
 				}
-			})
+			} ?: JSONObject.NULL)
 			put("includes", includes)
 			put("excludes", excludes)
 			put("page", page)
@@ -153,21 +153,20 @@ internal class MangaCloud(context: MangaLoaderContext) :
 	}
 
 	private fun parseMangaFromBrowse(json: JSONObject): Manga {
-		val slug = json.optString("slug", json.getString("id"))
+		val id = json.getString("id")
 		val title = json.getString("title")
-		val poster = json.optString("poster", "").nullIfEmpty()
-		val status = json.optString("status", "").nullIfEmpty()
+		val cover = json.optJSONObject("cover")
 
-		val coverUrl = poster?.let {
-			if (it.startsWith("http")) it else "$cdnUrl/$it"
+		val coverUrl = cover?.let {
+			"$cdnUrl/$id/${it.getString("id")}.${it.optString("f", "jpg")}"
 		}
 
 		val tags = parseTags(json.optJSONArray("tags"))
 
 		return Manga(
-			id = generateUid(slug),
-			url = slug,
-			publicUrl = "https://mangacloud.org/comic/$slug",
+			id = generateUid(id),
+			url = id,
+			publicUrl = "https://mangacloud.org/comic/$id",
 			coverUrl = coverUrl,
 			title = title,
 			altTitles = emptySet(),
@@ -185,18 +184,18 @@ internal class MangaCloud(context: MangaLoaderContext) :
 		val data = response.getJSONObject("data")
 
 		val title = data.getString("title")
-		val poster = data.optString("poster", "").nullIfEmpty()
+		val cover = data.optJSONObject("cover")
 		val description = data.optString("description", "").nullIfEmpty()
 		val status = data.optString("status", "").nullIfEmpty()
-		val author = data.optString("author", "").nullIfEmpty()
+		val authorsStr = data.optString("authors", "").nullIfEmpty()
 		val comicId = data.getString("id")
 
-		val coverUrl = poster?.let {
-			if (it.startsWith("http")) it else "$cdnUrl/$it"
+		val coverUrl = cover?.let {
+			"$cdnUrl/$comicId/${it.getString("id")}.${it.optString("f", "jpg")}"
 		} ?: manga.coverUrl
 
 		val tags = parseTags(data.optJSONArray("tags"))
-		val authors = author?.let { setOf(it) }.orEmpty()
+		val authors = authorsStr?.split("•")?.map { it.trim() }?.filter { it.isNotBlank() }?.toSet().orEmpty()
 
 		val chapters = mutableListOf<MangaChapter>()
 		val chaptersArray = data.optJSONArray("chapters")
@@ -206,7 +205,8 @@ internal class MangaCloud(context: MangaLoaderContext) :
 				val chapterId = ch.getString("id")
 				val number = ch.optDouble("number", 0.0).toFloat()
 				val name = ch.optString("name", "").nullIfEmpty()
-				val date = ch.optLong("date", 0L)
+				val dateStr = ch.optString("created_date", "")
+				val date = if (dateStr.isNotBlank()) parseDate(dateStr) else 0L
 
 				val chapterTitle = buildString {
 					append("Chapter ")
@@ -262,18 +262,25 @@ internal class MangaCloud(context: MangaLoaderContext) :
 			val img = images.getJSONObject(i)
 			MangaPage(
 				id = generateUid("$chapterId-$i"),
-				url = "$cdnUrl/$comicId/$chapterId/${img.getString("id")}.${img.getString("format")}",
+				url = "$cdnUrl/$comicId/$chapterId/${img.getString("id")}.${img.getString("f")}",
 				preview = null,
 				source = source,
 			)
 		}
 	}
 
+
+	private fun parseDate(dateStr: String): Long = try {
+		val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.ROOT)
+		sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
+		sdf.parse(dateStr)?.time ?: 0L
+	} catch (_: Exception) { 0L }
+
 	private fun parseState(status: String?): MangaState? = when (status) {
-		"ongoing" -> MangaState.ONGOING
-		"completed" -> MangaState.FINISHED
-		"hiatus" -> MangaState.PAUSED
-		"cancelled" -> MangaState.ABANDONED
+		"Ongoing" -> MangaState.ONGOING
+		"Completed" -> MangaState.FINISHED
+		"Hiatus" -> MangaState.PAUSED
+		"Cancelled" -> MangaState.ABANDONED
 		else -> null
 	}
 

@@ -221,7 +221,7 @@ internal class Mangadotnet(context: MangaLoaderContext) :
 	/**
 	 * MangaDetailPage route structure:
 	 *   route_value = { "data": MangaData }
-	 *   MangaData = { "mangaData": { "data": { "manga": Manga } } }
+	 *   MangaData = { "mangaData": { "manga": Manga } }
 	 *
 	 * After fetchRscData: we get MangaData.
 	 */
@@ -231,7 +231,7 @@ internal class Mangadotnet(context: MangaLoaderContext) :
 		val mangaData = fetchRscData(url, "pages/MangaDetailPage") ?: return manga
 
 		val mangaInfo = mangaData
-			.asMap("mangaData")?.asMap("data")?.asMap("manga")
+			.asMap("mangaData")?.asMap("manga")
 			?: return manga
 
 		val title = mangaInfo["title"] as? String ?: manga.title
