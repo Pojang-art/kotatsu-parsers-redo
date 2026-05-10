@@ -1,6 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.id
 
 import okhttp3.Headers
+import org.jsoup.nodes.Element
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.config.ConfigKey
@@ -31,39 +32,37 @@ internal class Keikomik(context: MangaLoaderContext) :
     )
 
     override suspend fun getFilterOptions() = MangaListFilterOptions(
-        availableTags = emptySet(), // nanti bisa ditambah kalau perlu
+        availableTags = emptySet(),
         availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
         availableContentTypes = EnumSet.of(ContentType.MANGA, ContentType.MANHWA),
     )
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-		val url = buildListUrl(page, order, filter)
-		val doc = webClient.httpGet(url, getRequestHeaders()).parseHtml()
+        val url = buildListUrl(page, order, filter)
+        val doc = webClient.httpGet(url, getRequestHeaders()).parseHtml()
 
-		val mangaList: List<Manga> = doc.select("div.manga-card, .manga-item, article, .series-item").mapNotNull { el ->
-			val a = el.selectFirst("a[href*='/komik/'], a[href*='/manga/']") ?: return@mapNotNull null
-			val href = a.attrAsRelativeUrl("href")
-			val title = el.selectFirst("h2, h3, .title, .manga-title")?.text()?.trim() ?: return@mapNotNull null
-			val cover = el.selectFirst("img")?.attr("data-src")?.ifBlank { null } ?: el.selectFirst("img")?.src()
+        return doc.select("div.manga-card, .manga-item, article, .series-item").mapNotNull { el: Element ->
+            val a = el.selectFirst("a[href*='/komik/'], a[href*='/manga/']") ?: return@mapNotNull null
+            val href = a.attrAsRelativeUrl("href")
+            val title = el.selectFirst("h2, h3, .title, .manga-title")?.text()?.trim() ?: return@mapNotNull null
+            val cover = el.selectFirst("img")?.attr("data-src")?.ifBlank { null } ?: el.selectFirst("img")?.src()
 
-			Manga(
-				id = generateUid(href),
-				title = title,
-				url = href,
-				publicUrl = a.attrAsAbsoluteUrl("href"),
-				coverUrl = cover,
-				largeCoverUrl = cover,
-				rating = RATING_UNKNOWN,
-				contentRating = ContentRating.ADULT,
-				tags = emptySet(),
-				state = null,
-				authors = emptySet(),
-				source = source,
-			)
-		}
-		
-		return mangaList.distinctBy { it.id }
-	}
+            Manga(
+                id = generateUid(href),
+                title = title,
+                url = href,
+                publicUrl = a.attrAsAbsoluteUrl("href"),
+                coverUrl = cover,
+                largeCoverUrl = cover,
+                rating = RATING_UNKNOWN,
+                contentRating = ContentRating.ADULT,
+                tags = emptySet(),
+                state = null,
+                authors = emptySet(),
+                source = source,
+            )
+        }.distinctBy { it.id }
+    }
 
     private fun buildListUrl(page: Int, order: SortOrder, filter: MangaListFilter): String {
         val base = "https://keikomik.web.id"
@@ -84,7 +83,7 @@ internal class Keikomik(context: MangaLoaderContext) :
         val title = doc.selectFirst("h1, .title, .manga-title")?.text()?.trim() ?: manga.title
         val description = doc.selectFirst(".synopsis, .description, .summary")?.text()?.trim().orEmpty()
 
-        val chapters = doc.select("a.chapter-link, li.chapter a, .episode-list a").mapNotNull { a ->
+        val chapters = doc.select("a.chapter-link, li.chapter a, .episode-list a").mapNotNull { a: Element ->
             val url = a.attrAsRelativeUrl("href")
             val chTitle = a.text().trim()
             MangaChapter(
@@ -98,7 +97,7 @@ internal class Keikomik(context: MangaLoaderContext) :
                 branch = null,
                 source = source,
             )
-        }.sortedBy { it.number }
+        }.sortedByDescending { it.number }
 
         return manga.copy(
             title = title,
@@ -115,7 +114,7 @@ internal class Keikomik(context: MangaLoaderContext) :
         val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), getRequestHeaders()).parseHtml()
 
         return doc.select("img.reader-img, .chapter-image img, img[data-src], img[src*='storage']")
-            .mapNotNull { img ->
+            .mapNotNull { img: Element ->
                 val url = img.attr("data-src").ifBlank { img.attr("src") }.trim()
                 if (url.isNotBlank() && !url.contains("placeholder")) {
                     MangaPage(
