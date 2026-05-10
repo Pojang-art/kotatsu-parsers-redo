@@ -41,7 +41,7 @@ internal class Keikomik(context: MangaLoaderContext) :
         val url = buildListUrl(page, order, filter)
         val doc = webClient.httpGet(url, getRequestHeaders()).parseHtml()
 
-        return doc.select("div.manga-card, .manga-item, article, .series-item").mapNotNull { el: Element ->
+        val rawList = doc.select("div.manga-card, .manga-item, article, .series-item").mapNotNull { el: Element ->
             val a = el.selectFirst("a[href*='/komik/'], a[href*='/manga/']") ?: return@mapNotNull null
             val href = a.attrAsRelativeUrl("href")
             val title = el.selectFirst("h2, h3, .title, .manga-title")?.text()?.trim() ?: return@mapNotNull null
@@ -61,7 +61,9 @@ internal class Keikomik(context: MangaLoaderContext) :
                 authors = emptySet(),
                 source = source,
             )
-        }.distinctBy { it.id }
+        }
+
+        return rawList.distinctBy { manga: Manga -> manga.id }
     }
 
     private fun buildListUrl(page: Int, order: SortOrder, filter: MangaListFilter): String {
