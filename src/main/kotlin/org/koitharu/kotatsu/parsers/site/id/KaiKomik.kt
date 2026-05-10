@@ -78,33 +78,29 @@ internal class Kaikomik(context: MangaLoaderContext) :
     }
 
     private fun buildListUrl(page: Int, order: SortOrder, filter: MangaListFilter): String {
-        return buildString {
-            append("https://")
-            append(domain)
+        val url = "https://&domain/comics".toHttpUrlOrNull()!!.newBuilder()
 
-            if (!filter.query.isNullOrEmpty()) {
-                append("/page/")
-                append(page)
-                append("/?s=")
-                append(filter.query.urlEncoded())
-            } else {
-                append("/manga/")
-                if (page > 1) {
-                    append("page/")
-                    append(page)
-                    append("/")
-                }
-                append("?order=")
-                append(
-                    when (order) {
-                        SortOrder.POPULARITY -> "popular"
-                        SortOrder.NEWEST -> "latest"
-                        SortOrder.ALPHABETICAL -> "title"
-                        else -> "update"
-                    }
-                )
+        if (!filter.query.isNullOrEmpty()) {
+            url.addQueryParameter("q", filter.query)
+        } else {
+            filter.tags.forEach { tag ->
+                url.addQueryParameter("genres", tag.key)
             }
+            val sortParam = when (order) {
+                SortOrder.UPDATED -> "updatedAt"
+                SortOrder.NEWEST -> "createdAt"
+                SortOrder.ALPHABETICAL -> "title"
+                SortOrder.POPULARITY -> "views"
+                else -> "updatedAt"
+            }
+            url.addQueryParameter("sort", sortParam)
         }
+
+        if (page > 1) {
+            url.addQueryParameter("page", page.toString())
+        }
+
+        return url.build().toString()
     }
 
     override suspend fun getDetails(manga: Manga): Manga {
