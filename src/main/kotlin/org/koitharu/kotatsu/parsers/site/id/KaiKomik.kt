@@ -37,31 +37,33 @@ internal class Kaikomik(context: MangaLoaderContext) :
     )
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-        val url = buildListUrl(page, order, filter)
-        val doc = webClient.httpGet(url, getRequestHeaders()).parseHtml()
+		val url = buildListUrl(page, order, filter)
+		val doc = webClient.httpGet(url, getRequestHeaders()).parseHtml()
 
-        return doc.select("div.manga-item, .komik-card, article, .list-manga").mapNotNull { el ->
-            val a = el.selectFirst("a[href*='/komik/'], a[href*='/manga/']") ?: return@mapNotNull null
-            val href = a.attrAsRelativeUrl("href")
-            val title = el.selectFirst("h2, h3, .title")?.text()?.trim() ?: return@mapNotNull null
-            val cover = el.selectFirst("img")?.attr("data-src") ?: el.selectFirst("img")?.src()
+		val mangaList: List<Manga> = doc.select("div.manga-item, .komik-card, article, .list-manga").mapNotNull { el ->
+			val a = el.selectFirst("a[href*='/komik/'], a[href*='/manga/']") ?: return@mapNotNull null
+			val href = a.attrAsRelativeUrl("href")
+			val title = el.selectFirst("h2, h3, .title")?.text()?.trim() ?: return@mapNotNull null
+			val cover = el.selectFirst("img")?.attr("data-src")?.ifBlank { null } ?: el.selectFirst("img")?.src()
 
-            Manga(
-                id = generateUid(href),
-                title = title,
-                url = href,
-                publicUrl = a.attrAsAbsoluteUrl("href"),
-                coverUrl = cover,
-                largeCoverUrl = cover,
-                rating = RATING_UNKNOWN,
-                contentRating = ContentRating.ADULT,
-                tags = emptySet(),
-                state = null,
-                authors = emptySet(),
-                source = source,
-            )
-        }.distinctBy { it.id }
-    }
+			Manga(
+				id = generateUid(href),
+				title = title,
+				url = href,
+				publicUrl = a.attrAsAbsoluteUrl("href"),
+				coverUrl = cover,
+				largeCoverUrl = cover,
+				rating = RATING_UNKNOWN,
+				contentRating = ContentRating.ADULT,
+				tags = emptySet(),
+				state = null,
+				authors = emptySet(),
+				source = source,
+			)
+		}
+		
+		return mangaList.distinctBy { it.id }
+	}
 
     private fun buildListUrl(page: Int, order: SortOrder, filter: MangaListFilter): String {
         val base = "https://kaikomik.my.id"
