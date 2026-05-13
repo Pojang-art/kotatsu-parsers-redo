@@ -134,6 +134,9 @@ internal class Keikomik(context: MangaLoaderContext) :
 		return mangaList
 	}
 
+	/**
+	 * Extract __NEXT_DATA__ JSON from the page HTML
+	 */
 	private fun extractNextData(doc: org.jsoup.nodes.Document): JSONObject? {
 		val scriptEl = doc.selectFirst("script#__NEXT_DATA__") ?: return null
 		return runCatching { JSONObject(scriptEl.data()) }.getOrNull()
@@ -142,6 +145,7 @@ internal class Keikomik(context: MangaLoaderContext) :
 	override suspend fun getDetails(manga: Manga): Manga {
 		val doc = webClient.httpGet(manga.publicUrl, getRequestHeaders()).parseHtml()
 
+		// Try __NEXT_DATA__ first (available on Next.js SSR pages)
 		val nextData = extractNextData(doc)
 		if (nextData != null) {
 			val item = nextData.optJSONObject("props")
