@@ -230,7 +230,11 @@ internal class Kaikomik(context: MangaLoaderContext) :
 		val doc = webClient.httpGet(manga.publicUrl, getRequestHeaders()).parseHtml()
 
 		val title = doc.selectFirst("h1")?.text()?.trim() ?: manga.title
+
+		// Description from synopsis section
 		val description = doc.selectFirst("#displayDesc, [class*=synopsis] p, [class*=desc] p")?.text()?.trim()
+
+		// Genre badges - Kaikomik uses <a href="/comics?q=&genres=X" class="genre-badge">
 		val tags = doc.select("a[href*='genres='], .genre-badge").mapNotNullToSet { a ->
 			val tagTitle = a.text().trim()
 			if (tagTitle.isNotBlank()) {
