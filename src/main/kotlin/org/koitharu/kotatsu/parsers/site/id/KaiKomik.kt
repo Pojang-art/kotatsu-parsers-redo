@@ -273,12 +273,12 @@ internal class Kaikomik(context: MangaLoaderContext) :
 
 		// Clean up wsrv.nl proxy URLs
 		if (coverUrl.contains("wsrv.nl/?url=")) {
-			val actualUrl = coverUrl.substringAfter("wsrv.nl/?url=")
-				.substringBefore("&")
-				.substringBefore("?")
-			coverUrl = java.net.URLDecoder.decode(actualUrl, "UTF-8")
-		}
-
+            coverUrl = coverUrl.substringAfter("wsrv.nl/?url=")
+                    .substringBefore("&")
+                    .substringBefore("?")
+                    // Decode URL-encoded characters
+                    coverUrl = java.net.URLDecoder.decode(coverUrl, "UTF-8")
+                }
 		// Also try og:image meta tag for cover
 		if (coverUrl.isBlank() || coverUrl == manga.coverUrl) {
 			doc.selectFirst("meta[property=og:image]")?.attr("content")?.let { ogImage ->
