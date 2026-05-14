@@ -80,13 +80,13 @@ internal class Kaikomik(context: MangaLoaderContext) :
 
 			for (i in 0 until jsonArray.length()) {
 				val item = jsonArray.optJSONObject(i) ?: continue
-				val mangaId = item.getStringOrNull("_id") ?: continue
-				val title = item.getStringOrNull("title") ?: continue
+                val mangaId = item.optString("_id").ifBlank { continue }
+                val title = item.optString("title").ifBlank { continue }
 
-				// Cover can be in 'cover' or 'image' field
-				var coverUrl = item.getStringOrNull("cover")
-					?: item.getStringOrNull("image")
-					?: ""
+                // Cover can be in 'cover' or 'image' field
+                var coverUrl = item.optString("cover").ifBlank {
+                    item.optString("image")
+                }
 
 				// If cover URL uses wsrv.nl proxy, extract the actual URL
 				if (coverUrl.contains("wsrv.nl/?url=")) {
