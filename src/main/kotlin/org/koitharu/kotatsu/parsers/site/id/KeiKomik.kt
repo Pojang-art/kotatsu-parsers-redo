@@ -153,11 +153,11 @@ internal class Keikomik(context: MangaLoaderContext) :
 				?.optJSONObject("item")
 
 			if (item != null) {
-				val title = item.getStringOrNull("name") ?: manga.title
-				val description = item.getStringOrNull("description")
-				val coverUrl = item.getStringOrNull("image") ?: manga.coverUrl
-				val author = item.getStringOrNull("author")
-				val status = item.getStringOrNull("status")
+                val title = item.optString("name").ifBlank { manga.title }
+                val description = item.optString("description").ifBlank { null }
+                val coverUrl = item.optString("image").ifBlank { manga.coverUrl }
+                val author = item.optString("author").ifBlank { null }
+                val status = item.optString("status").ifBlank { null }
 
 				val state = when {
 					status == null -> null
@@ -169,18 +169,20 @@ internal class Keikomik(context: MangaLoaderContext) :
 					else -> null
 				}
 
-				val tags = item.optJSONArray("genre")?.mapNotNullToSet { el ->
-					val tagTitle = el.optStringOrNull()?.trim()
-					if (!tagTitle.isNullOrBlank()) {
-						MangaTag(title = tagTitle, key = tagTitle.lowercase(), source = source)
-					} else null
-				} ?: emptySet()
+                val tags = item.optJSONArray("genre")?.let { arr ->
+                    (0 until arr.length()).mapNotNull { i ->
+                        val tagTitle = arr.optString(i).trim()
+                        if (tagTitle.isNotBlank()) {
+                            MangaTag(title = tagTitle, key = tagTitle.lowercase(), source = source)
+                        } else null
+                    }.toSet()
+                } ?: emptySet()
 
 				// Parse chapters from komikList in pageProps
 				val pageProps = nextData.optJSONObject("props")?.optJSONObject("pageProps")
 				val chapters = pageProps?.optJSONArray("komikList")?.mapChapters(reversed = true) { index, chObj ->
-					val chId = chObj.getStringOrNull("id") ?: return@mapChapters null
-					val slug = item.getStringOrNull("slug") ?: return@mapChapters null
+                    val chId = chObj.optString("id").ifBlank { return@mapChapters null }
+                    val slug = item.optString("slug").ifBlank { return@mapChapters null }
 					val chUrl = "/chapter/${slug}-chapter-${chId}"
 					val chTitle = "Chapter ${chId}"
 
