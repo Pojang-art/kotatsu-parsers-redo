@@ -279,8 +279,6 @@ internal class Kaikomik(context: MangaLoaderContext) :
 			coverUrl = java.net.URLDecoder.decode(coverUrl, "UTF-8")
 		}
 
-		// Also try og:image meta tag for cover
-		// Ganti .isBlank() jadi .isNullOrBlank()
 		if (coverUrl.isNullOrBlank() || coverUrl == manga.coverUrl) {
 			doc.selectFirst("meta[property=og:image]")?.attr("content")?.let { ogImage ->
 				if (ogImage.isNotBlank()) {
@@ -334,21 +332,35 @@ internal class Kaikomik(context: MangaLoaderContext) :
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain), getRequestHeaders()).parseHtml()
 
-		return doc.select("img[src*='westmanga'], img[src*='imgbox'], img[src*='cloudinary'], " +
-			"img[src*='.webp'], img[src*='.jpg'], img[src*='.png']")
-			.filter { img ->
-				val src = img.attr("src").lowercase()
-				// Include manga page images
-				(src.contains("chapter") || src.contains("westmanga") ||
-					src.contains("imgbox") || src.contains("cloudinary")) &&
-				// Exclude UI images
-				!src.contains("avatar") && !src.contains("logo") &&
-				!src.contains("icon") && !src.contains("badge") &&
-				!src.contains("flag") && !src.contains("favicon")
+		// KaiKomik uses lazy-loaded images with class "manga-img"
+		// Images not yet scrolled into view only have data-src, not src
+		val mangaImgs = doc.select("img.manga-img, img.lazy-manga, img[data-src*='cloudinary'], img[src*='cloudinary']")
+
+		if (mangaImgs.isNotEmpty()) {
+			return mangaImgs.mapNotNull { img ->
+				// Prefer data-src because it's always set, src only set after lazy-load
+				val url = img.attr("data-src").ifBlank {
+					img.attr("src").ifBlank {
+						img.attr("data-lazy-src")
+					}
+				}.trim()
+				if (url.isNotBlank() && url.startsWith("http")) {
+					MangaPage(
+						id = generateUid(url),
+						url = url,
+						preview = null,
+						source = source,
+					)
+				} else null
 			}
+		}
+
+		// Fallback: broader image search
+		return doc.select("img[src*='westmanga'], img[src*='imgbox'], img[src*='cloudinary'], " +
+			"img[data-src*='cloudinary'], img[data-src*='westmanga']")
 			.mapNotNull { img ->
-				val url = img.attr("src").ifBlank {
-					img.attr("data-src").ifBlank {
+				val url = img.attr("data-src").ifBlank {
+					img.attr("src").ifBlank {
 						img.attr("data-lazy-src")
 					}
 				}.trim()
