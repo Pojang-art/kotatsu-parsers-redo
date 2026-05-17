@@ -124,7 +124,7 @@ internal class Komikapk(context: MangaLoaderContext) :
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
         val url = buildListUrl(page, filter, order)
-        val doc = webClient.httpGet(url).parseHtml()
+        val doc = webClient.httpGet(url, getRequestHeaders()).parseHtml()
         return parseMangaList(doc)
     }
 
@@ -243,7 +243,7 @@ internal class Komikapk(context: MangaLoaderContext) :
         // Primary: use SvelteKit __data.json API for reliable structured data
         try {
             val dataUrl = "${chapterUrl}/__data.json"
-            val json = webClient.httpGet(dataUrl).parseJson()
+            val json = webClient.httpGet(dataUrl, getRequestHeaders()).parseJson()
             val pages = parsePagesFromJson(json)
             if (pages.isNotEmpty()) return pages
         } catch (_: Exception) {
@@ -251,7 +251,7 @@ internal class Komikapk(context: MangaLoaderContext) :
         }
 
         // Fallback: parse HTML
-        val doc = webClient.httpGet(chapterUrl).parseHtml()
+        val doc = webClient.httpGet(chapterUrl, getRequestHeaders()).parseHtml()
         return parsePagesFromHtml(doc, chapter)
     }
 
@@ -283,34 +283,40 @@ internal class Komikapk(context: MangaLoaderContext) :
     }
 
     private fun parsePagesFromHtml(doc: Document, chapter: MangaChapter): List<MangaPage> {
-        val imgElements = doc.select("section img, img[alt*='image-komik']")
-        val realPages = imgElements.mapNotNull { img ->
-            val src = img.src() ?: img.attr("data-src").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        // Primary selector: images with alt matching 'image-komik' pattern (most specific)
+        val primaryImgs = doc.select("img[alt*='image-komik'], img[src*='cdn-guard'], img[src*='komikapk2-chapter']")
+        val realPages = primaryImgs.mapNotNull { img ->
+            val src = img.src() ?: img.attr("src").takeIf { it.isNotBlank() }
+                ?: img.attr("data-src").takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
             if (src.contains("loading.gif") || src.isBlank()) return@mapNotNull null
             MangaPage(id = generateUid(src), url = src, preview = null, source = source)
         }
         if (realPages.isNotEmpty()) return realPages
 
-        // Fallback: construct CDN URLs from image count
-        val totalFromCount = imgElements.size
-        if (totalFromCount > 0) {
-            val segments = chapter.url.split("/").filter { it.isNotBlank() }
-            val comicSlug = segments.getOrNull(1) ?: return emptyList()
-            val chapterName = segments.getOrNull(3) ?: return emptyList()
-            return (0 until totalFromCount).map { i ->
-                val url = "${cdnUrl}$comicSlug/chapter-$chapterName/image-${i.toString().padStart(4, '0')}.webp"
-                MangaPage(id = generateUid(url), url = url, preview = null, source = source)
-            }
+        // Fallback: broader section img selector
+        val sectionImgs = doc.select("section img")
+        val sectionPages = sectionImgs.mapNotNull { img ->
+            val src = img.src() ?: img.attr("src").takeIf { it.isNotBlank() }
+                ?: img.attr("data-src").takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
+            if (src.contains("loading.gif") || src.isBlank()) return@mapNotNull null
+            MangaPage(id = generateUid(src), url = src, preview = null, source = source)
         }
+        if (sectionPages.isNotEmpty()) return sectionPages
 
-        // Last resort: extract total from alt text (e.g. "...-32/33")
-        val altLast = imgElements.lastOrNull()?.attr("alt")
+        // Last resort: construct CDN URLs from chapter URL + alt text image count
+        val allImgs = doc.select("img[alt*='image-komik']")
+        val altLast = allImgs.lastOrNull()?.attr("alt")
         val totalFromAlt = altLast?.substringAfterLast("/")?.toIntOrNull()
-        if (totalFromAlt != null && totalFromAlt > 0) {
-            val segments = chapter.url.split("/").filter { it.isNotBlank() }
-            val comicSlug = segments.getOrNull(1) ?: return emptyList()
-            val chapterName = segments.getOrNull(3) ?: return emptyList()
-            return (0 until totalFromAlt).map { i ->
+
+        val segments = chapter.url.split("/").filter { it.isNotBlank() }
+        val comicSlug = segments.getOrNull(1) ?: return emptyList()
+        val chapterName = segments.getOrNull(3) ?: return emptyList()
+
+        val total = totalFromAlt ?: allImgs.size
+        if (total > 0) {
+            return (0 until total).map { i ->
                 val url = "${cdnUrl}$comicSlug/chapter-$chapterName/image-${i.toString().padStart(4, '0')}.webp"
                 MangaPage(id = generateUid(url), url = url, preview = null, source = source)
             }
