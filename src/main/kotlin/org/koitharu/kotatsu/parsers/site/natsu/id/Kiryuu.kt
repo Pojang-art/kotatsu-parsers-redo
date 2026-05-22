@@ -12,6 +12,8 @@ internal class Kiryuu(context: MangaLoaderContext) :
 	NatsuParser(context, MangaParserSource.KIRYUU, pageSize = 24) {
 
 	override val configKeyDomain = ConfigKey.Domain(
+        "07.kiryuu.to",
+        "06.kiryuu.to",
 		"v5.kiryuu.to",
 		"v4.kiryuu.to",
 		"v3.kiryuu.to",
